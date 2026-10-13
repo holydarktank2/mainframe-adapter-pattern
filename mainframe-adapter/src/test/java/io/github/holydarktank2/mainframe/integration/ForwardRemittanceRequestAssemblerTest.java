@@ -19,7 +19,11 @@ class ForwardRemittanceRequestAssemblerTest {
                 new BigDecimal("80.10"), new BigDecimal("81.00")
         );
 
-        AddTransactionOuterRequest result = new ForwardRemittanceRequestAssembler().assemble(request);
+        ForwardRemittanceRequestAssembler assembler = new ForwardRemittanceRequestAssembler(
+                new OuterRequestCommonFieldApplier(),
+                new FsfrmtioCommonFieldApplier()
+        );
+        AddTransactionOuterRequest result = assembler.assemble(request);
 
         assertEquals("A100", result.getTxnCode());
         assertEquals("BEGIN13", result.getBegin13());

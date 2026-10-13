@@ -1,120 +1,156 @@
 # mainframe-adapter-pattern
 
-本專案示範：
-- 前端送入一筆「遠期匯款」請求
-- 後端如何依照銀行中心真實欄位（`sampleRequest`）組出 `AddTransactionOuterRequest`
-- 呼叫銀行中心後，如何把 `AddTransactionOuterResponse` 轉成前端需要的回應
-
-> 目前示範功能：**Forward Remittance（FSFRMTIO）**
+本專案示範：同一支銀行中心 `AddTransactionOuterRequest`，如何支援多種完全不同功能，以及相似功能共享大量欄位。
 
 ---
 
-## 1. 真實銀行模型來源
+## 1. 真實銀行模型來源（sampleRequest）
 
-實際欄位使用以下類別（由你提供）：
+使用你提供的真實欄位模型：
 
 - `/home/runner/work/mainframe-adapter-pattern/mainframe-adapter-pattern/mainframe-adapter/src/main/java/io/github/holydarktank2/mainframe/sampleRequest/AddTransactionOuterRequest.java`
 - `/home/runner/work/mainframe-adapter-pattern/mainframe-adapter-pattern/mainframe-adapter/src/main/java/io/github/holydarktank2/mainframe/sampleRequest/AddTransactionOuterResponse.java`
-- `/home/runner/work/mainframe-adapter-pattern/mainframe-adapter-pattern/mainframe-adapter/src/main/java/io/github/holydarktank2/mainframe/sampleRequest/AddTransactionFsfrmtioOuterRequest.java`
 
 ---
 
-## 2. 端到端元件（前端 -> 後端 -> 銀行 -> 前端）
+## 2. 新增多個 Controller 示範的兩種情境
 
-### (A) 前端進入點：Controller
+## 2.1 完全不同功能（使用不同區塊）
 
+### A. 網銀申請 Controller
+- Controller: `OnlineBankingApplyController`
+- Endpoint: `POST /api/ebanking/apply`
+- Assembler: `OnlineBankingApplyRequestAssembler`
+- 主要區塊：`foqapi00`（`begin8/pgmName8/end8`）
+
+這條流程主要操作 `foqapi00` 欄位（例如 applicantId、docuNo、spotFxAmount），與匯款流程用到的區塊不同。
+
+## 2.2 相似功能（大量相同欄位）
+
+### B. 遠期匯款 Controller
+- Controller: `ForwardRemittanceController`
+- Endpoint: `POST /api/remittance/forward`
+- 主要區塊：`fsfrmtio`（`begin13/pgmName13/end13`）
+
+### C. 即期匯款 Controller
+- Controller: `SpotRemittanceController`
+- Endpoint: `POST /api/remittance/spot`
+- 主要區塊：同樣是 `fsfrmtio`
+
+兩條流程都大量使用相同 `fsfrmtio` 欄位，只在少數欄位（例如 `ecMk`）或流程用途不同。
+
+---
+
+## 3. Service 到外部服務，如何解決欄位過多
+
+本專案採「分層組裝 + 共用欄位套用器」：
+
+1. **Controller（前端入口）**
+   - 只收/回前端 DTO，不處理銀行欄位細節。
+
+2. **Facade Service（用例層）**
+   - 統一流程：
+     - `RequestAssembler` 組外部請求
+     - `BankCenterTransactionClient` 呼叫銀行
+     - `ResponseMapper` 轉回前端 DTO
+
+3. **Request Assembler（場景層）**
+   - 每個業務場景保留自己的組裝規則。
+   - 只處理「該場景專屬」欄位。
+
+4. **Common Field Applier（共享欄位層）**
+   - `OuterRequestCommonFieldApplier`：統一套用外層共用欄位（txnCode、empNo、businessDate...）
+   - `FsfrmtioCommonFieldApplier`：統一套用 `fsfrmtio` 常見欄位
+
+5. **BankCenterTransactionClient（外部整合邊界）**
+   - 將 HTTP/SOAP/Host 細節隔離在介面後方，讓業務邏輯不耦合 transport 細節。
+
+---
+
+## 4. 「100 種情境要 100 個 Assembler 嗎？」
+
+不建議做成 100 個巨大且完全重複的 Assembler。
+
+本專案示範的做法是：
+
+- **保留場景 Assembler**（可讀性高，方便維護）
+- 但把大量重複 setter 抽成 **Common Field Applier**
+- 讓新場景只需：
+  1. 決定要啟用哪個區塊（例如 begin8 / begin13）
+  2. 寫少量場景差異欄位
+  3. 重用共用欄位套用器
+
+也就是：
+- 不是「100 個從零開始」
+- 而是「100 個薄場景 Assembler + 少數可重用欄位元件」
+
+---
+
+## 5. 這個方法的優缺點
+
+### 優點
+1. **可讀性高**：每個 Controller/Service 對應一個業務場景，初階工程師容易追。
+2. **修改風險可控**：某場景調整欄位時，影響範圍小。
+3. **共用避免重複**：透過 Common Field Applier 降低重複 setter。
+4. **測試清楚**：Assembler/Service/Controller 可分層單測。
+5. **外部依賴隔離**：`BankCenterTransactionClient` 便於替換與 mock。
+
+### 缺點
+1. **類別數量變多**：場景越多，檔案數量越多。
+2. **初期設計成本較高**：要先定義 DTO、Assembler、Mapper、Service。
+3. **欄位規格變更時需同步更新多處**：DTO、Assembler、測試需一起改。
+4. **非零執行成本**：多一層映射/組裝（通常可接受）。
+
+---
+
+## 6. 端到端流程（前端 -> 後端 -> 銀行 -> 前端）
+
+以 `POST /api/remittance/forward` 為例：
+
+1. 前端送 `ForwardRemittanceFrontendRequest`
+2. `ForwardRemittanceController` 呼叫 `ForwardRemittanceFacadeService`
+3. Service 呼叫 `ForwardRemittanceRequestAssembler`
+4. Assembler 內部使用：
+   - `OuterRequestCommonFieldApplier`
+   - `FsfrmtioCommonFieldApplier`
+   組成 `AddTransactionOuterRequest`
+5. Service 呼叫 `BankCenterTransactionClient.addTransaction(...)`
+6. 收到 `AddTransactionOuterResponse`
+7. `ForwardRemittanceResponseMapper` 轉成 `ForwardRemittanceFrontendResponse`
+8. Controller 回傳前端
+
+---
+
+## 7. 主要類別清單
+
+### Controllers
 - `ForwardRemittanceController`
-- API：`POST /api/remittance/forward`
-- 收 `ForwardRemittanceFrontendRequest`，回 `ForwardRemittanceFrontendResponse`
+- `SpotRemittanceController`
+- `OnlineBankingApplyController`
 
-### (B) 用例服務：Facade Service
-
+### Services
 - `ForwardRemittanceFacadeService`
-- 責任：
-  1. 呼叫 `ForwardRemittanceRequestAssembler` 把前端 DTO 轉成 `AddTransactionOuterRequest`
-  2. 呼叫 `BankCenterTransactionClient.addTransaction(...)` 發送到銀行中心
-  3. 呼叫 `ForwardRemittanceResponseMapper` 把外部回應轉回前端 DTO
+- `SpotRemittanceFacadeService`
+- `OnlineBankingApplyFacadeService`
 
-### (C) 請求組裝：Assembler
-
+### Assemblers / Mappers
 - `ForwardRemittanceRequestAssembler`
-- 重點：
-  - 設定外層交易欄位：`txnCode / txnUniqueKey / processBrnNo / empNo / ...`
-  - 設定 FSFRMTIO 區塊啟用標記：`begin13 / pgmName13 / end13`
-  - 填入 `fsfrmtio` 區塊真實欄位：
-    - `fsfrmtioRefNo`
-    - `fsfrmtioTxCod`
-    - `fsfrmtioProcessBranch`
-    - `fsfrmtioInwardBranch`
-    - `fsfrmtioCurency`
-    - `fsfrmtioNewInterbnchNet`
-    - `fsfrmtioNewInterbnchRemit`
-    - `fsfrmtioOldInterbnchNet`
-    - `fsfrmtioOldInterbnchRemit`
-
-### (D) 回應轉換：Mapper
-
+- `SpotRemittanceRequestAssembler`
+- `OnlineBankingApplyRequestAssembler`
 - `ForwardRemittanceResponseMapper`
-- 從 `AddTransactionOuterResponse` 取值並回給前端：
-  - `outReturnCode`
-  - `outErrorMsg`
-  - `outTxnNo`
-  - `outSerialNo`
-  - `outNoticeNo`
-  - `outCustomerNo`
-  - `outFwdContNo1`
-  - `outFwdValueFx1 / outFwdValueNt1 / outFwdValueUs1`
+- `SpotRemittanceResponseMapper`
+- `OnlineBankingApplyResponseMapper`
+
+### Shared appliers
+- `OuterRequestCommonFieldApplier`
+- `FsfrmtioCommonFieldApplier`
 
 ---
 
-## 3. 實際流程（逐步）
-
-1. 前端呼叫 `POST /api/remittance/forward`
-2. Controller 收到 `ForwardRemittanceFrontendRequest`
-3. Service 呼叫 Assembler 轉成 `AddTransactionOuterRequest`
-4. Service 呼叫 `BankCenterTransactionClient` 送銀行中心
-5. 銀行中心回 `AddTransactionOuterResponse`
-6. Service 呼叫 Mapper 轉成 `ForwardRemittanceFrontendResponse`
-7. Controller 回傳 JSON 給前端
-
----
-
-## 4. 關鍵程式路徑
-
-- Controller
-  - `/home/runner/work/mainframe-adapter-pattern/mainframe-adapter-pattern/mainframe-adapter/src/main/java/io/github/holydarktank2/mainframe/controller/ForwardRemittanceController.java`
-- Service
-  - `/home/runner/work/mainframe-adapter-pattern/mainframe-adapter-pattern/mainframe-adapter/src/main/java/io/github/holydarktank2/mainframe/application/ForwardRemittanceFacadeService.java`
-- Request Assembler
-  - `/home/runner/work/mainframe-adapter-pattern/mainframe-adapter-pattern/mainframe-adapter/src/main/java/io/github/holydarktank2/mainframe/integration/ForwardRemittanceRequestAssembler.java`
-- Response Mapper
-  - `/home/runner/work/mainframe-adapter-pattern/mainframe-adapter-pattern/mainframe-adapter/src/main/java/io/github/holydarktank2/mainframe/integration/ForwardRemittanceResponseMapper.java`
-- Frontend DTO
-  - `/home/runner/work/mainframe-adapter-pattern/mainframe-adapter-pattern/mainframe-adapter/src/main/java/io/github/holydarktank2/mainframe/controller/dto/`
-
----
-
-## 5. 測試
+## 8. 測試
 
 ```bash
 cd /home/runner/work/mainframe-adapter-pattern/mainframe-adapter-pattern/mainframe-adapter
 mvn test
 ```
-
-新增測試：
-- `ForwardRemittanceRequestAssemblerTest`
-- `ForwardRemittanceFacadeServiceTest`
-- `ForwardRemittanceControllerTest`
-
----
-
-## 6. 你要擴充其他功能時
-
-如果要擴充即期匯款/網銀申請/外匯交易，請複製同樣模式：
-
-1. 新增 frontend request/response DTO
-2. 新增對應 request assembler（填對應 sampleRequest 子區塊）
-3. 新增 response mapper（讀對應 response 欄位）
-4. 新增 facade service 方法
-5. 新增 controller endpoint
 

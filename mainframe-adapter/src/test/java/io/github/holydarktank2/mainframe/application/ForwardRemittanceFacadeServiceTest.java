@@ -5,6 +5,8 @@ import io.github.holydarktank2.mainframe.controller.dto.ForwardRemittanceFronten
 import io.github.holydarktank2.mainframe.integration.BankCenterTransactionClient;
 import io.github.holydarktank2.mainframe.integration.ForwardRemittanceRequestAssembler;
 import io.github.holydarktank2.mainframe.integration.ForwardRemittanceResponseMapper;
+import io.github.holydarktank2.mainframe.integration.FsfrmtioCommonFieldApplier;
+import io.github.holydarktank2.mainframe.integration.OuterRequestCommonFieldApplier;
 import io.github.holydarktank2.mainframe.sampleRequest.AddTransactionOuterResponse;
 import org.junit.jupiter.api.Test;
 
@@ -33,7 +35,7 @@ class ForwardRemittanceFacadeServiceTest {
         };
 
         ForwardRemittanceFacadeService service = new ForwardRemittanceFacadeService(
-                new ForwardRemittanceRequestAssembler(),
+                new ForwardRemittanceRequestAssembler(new OuterRequestCommonFieldApplier(), new FsfrmtioCommonFieldApplier()),
                 new ForwardRemittanceResponseMapper(),
                 client
         );
