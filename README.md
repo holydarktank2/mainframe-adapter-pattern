@@ -1,128 +1,120 @@
 # mainframe-adapter-pattern
 
-此專案示範如何把多功能銀行交易（匯款、網銀申請、外匯等）統一走 `addTransaction` 外部 API，並讓各 Domain 只關注自己的欄位。
+本專案示範：
+- 前端送入一筆「遠期匯款」請求
+- 後端如何依照銀行中心真實欄位（`sampleRequest`）組出 `AddTransactionOuterRequest`
+- 呼叫銀行中心後，如何把 `AddTransactionOuterResponse` 轉成前端需要的回應
+
+> 目前示範功能：**Forward Remittance（FSFRMTIO）**
 
 ---
 
-## 1) 問題與目標
+## 1. 真實銀行模型來源
 
-銀行主機 API `AddTransactionOuterRequest`/`AddTransactionOuterResponse` 是統一入口，實務上會非常大（上百到上千欄位）。
+實際欄位使用以下類別（由你提供）：
 
-目標：
-- Domain service 不直接操作巨大外部模型
-- 每個功能只定義自己需要的 request/response
-- 集中轉換邏輯，避免散落在各處
-- 提供初階工程師可直接照抄的使用流程
+- `/home/runner/work/mainframe-adapter-pattern/mainframe-adapter-pattern/mainframe-adapter/src/main/java/io/github/holydarktank2/mainframe/sampleRequest/AddTransactionOuterRequest.java`
+- `/home/runner/work/mainframe-adapter-pattern/mainframe-adapter-pattern/mainframe-adapter/src/main/java/io/github/holydarktank2/mainframe/sampleRequest/AddTransactionOuterResponse.java`
+- `/home/runner/work/mainframe-adapter-pattern/mainframe-adapter-pattern/mainframe-adapter/src/main/java/io/github/holydarktank2/mainframe/sampleRequest/AddTransactionFsfrmtioOuterRequest.java`
 
 ---
 
-## 2) 簡化後設計（初階工程師優先）
+## 2. 端到端元件（前端 -> 後端 -> 銀行 -> 前端）
 
-> 為了好上手，這份實作優先採「明確類別 + 固定流程」：
-> - Domain Request → Converter → `AddTransactionOuterRequest`
-> - 呼叫銀行 API
-> - `AddTransactionOuterResponse` → Response Converter → Domain Response
+### (A) 前端進入點：Controller
 
-主要類別：
+- `ForwardRemittanceController`
+- API：`POST /api/remittance/forward`
+- 收 `ForwardRemittanceFrontendRequest`，回 `ForwardRemittanceFrontendResponse`
 
-- 外部統一模型
-  - `AddTransactionOuterRequest`
-  - `AddTransactionOuterResponse`
-  - `BankApiClient`（你實作真正 HTTP/SOAP/Host 呼叫）
+### (B) 用例服務：Facade Service
 
-- 4 組 Domain Request
-  - `ForwardRemittanceRequest`
-  - `SpotRemittanceRequest`
-  - `OnlineBankingRequest`
-  - `ForeignExchangeRequest`
+- `ForwardRemittanceFacadeService`
+- 責任：
+  1. 呼叫 `ForwardRemittanceRequestAssembler` 把前端 DTO 轉成 `AddTransactionOuterRequest`
+  2. 呼叫 `BankCenterTransactionClient.addTransaction(...)` 發送到銀行中心
+  3. 呼叫 `ForwardRemittanceResponseMapper` 把外部回應轉回前端 DTO
 
-- 4 組 Domain Response
-  - `ForwardRemittanceResponse`
-  - `SpotRemittanceResponse`
-  - `OnlineBankingResponse`
-  - `ForeignExchangeResponse`
+### (C) 請求組裝：Assembler
 
-- 4 組 Request Converter + 4 組 Response Converter
-  - `ForwardRemittanceConverter` / `ForwardRemittanceResponseConverter`
-  - `SpotRemittanceConverter` / `SpotRemittanceResponseConverter`
-  - `OnlineBankingConverter` / `OnlineBankingResponseConverter`
-  - `ForeignExchangeConverter` / `ForeignExchangeResponseConverter`
+- `ForwardRemittanceRequestAssembler`
+- 重點：
+  - 設定外層交易欄位：`txnCode / txnUniqueKey / processBrnNo / empNo / ...`
+  - 設定 FSFRMTIO 區塊啟用標記：`begin13 / pgmName13 / end13`
+  - 填入 `fsfrmtio` 區塊真實欄位：
+    - `fsfrmtioRefNo`
+    - `fsfrmtioTxCod`
+    - `fsfrmtioProcessBranch`
+    - `fsfrmtioInwardBranch`
+    - `fsfrmtioCurency`
+    - `fsfrmtioNewInterbnchNet`
+    - `fsfrmtioNewInterbnchRemit`
+    - `fsfrmtioOldInterbnchNet`
+    - `fsfrmtioOldInterbnchRemit`
 
-- 統一入口服務（最簡單用法）
-  - `SimpleBankTransactionService`
+### (D) 回應轉換：Mapper
 
----
-
-## 3) 如何建立「各功能外部呼叫」並轉成統一呼叫
-
-### Step A. Domain 只建立自己的 request
-
-```java
-ForwardRemittanceRequest request = ForwardRemittanceRequest.builder()
-    .refNo("TX001")
-    .contractNo("CTR001")
-    .dealType("FWD")
-    .amount(new BigDecimal("2000"))
-    .build();
-```
-
-### Step B. 準備銀行 API 呼叫實作
-
-```java
-BankApiClient bankApiClient = outerRequest -> {
-    // 這裡接你的真實銀行 API 呼叫
-    AddTransactionOuterResponse response = new AddTransactionOuterResponse();
-    response.setTransactionType(outerRequest.getTransactionType());
-    response.setResponseCode("0000");
-    response.setResponseMessage("SUCCESS");
-    response.putSectionField("basic", "refNo", outerRequest.getSection("basic").get("refNo"));
-    response.putSectionField("remittance", "bankSerialNo", "BK20261013001");
-    return response;
-};
-```
-
-### Step C. 用簡化服務直接執行
-
-```java
-SimpleBankTransactionService service = new SimpleBankTransactionService();
-ForwardRemittanceResponse result = service.executeForwardRemittance(request, bankApiClient);
-```
-
-> 初階工程師建議：先只用 `SimpleBankTransactionService`，不要一開始就自己拼裝所有 converter。
+- `ForwardRemittanceResponseMapper`
+- 從 `AddTransactionOuterResponse` 取值並回給前端：
+  - `outReturnCode`
+  - `outErrorMsg`
+  - `outTxnNo`
+  - `outSerialNo`
+  - `outNoticeNo`
+  - `outCustomerNo`
+  - `outFwdContNo1`
+  - `outFwdValueFx1 / outFwdValueNt1 / outFwdValueUs1`
 
 ---
 
-## 4) 擴充新功能（照這個模板）
+## 3. 實際流程（逐步）
 
-假設你要新增「股票查詢」：
-
-1. 新增 `StockInquiryRequest`（Domain 欄位）
-2. 新增 `StockInquiryResponse`
-3. 新增 `StockInquiryConverter`（Request -> OuterRequest）
-4. 新增 `StockInquiryResponseConverter`（OuterResponse -> DomainResponse）
-5. 在 `SimpleBankTransactionService` 新增 `executeStockInquiry(...)`
-6. 新增對應測試，至少驗證：
-   - request 關鍵欄位有被映射
-   - response 關鍵欄位有被反解
-   - validation 失敗時會丟 `ConversionException`
+1. 前端呼叫 `POST /api/remittance/forward`
+2. Controller 收到 `ForwardRemittanceFrontendRequest`
+3. Service 呼叫 Assembler 轉成 `AddTransactionOuterRequest`
+4. Service 呼叫 `BankCenterTransactionClient` 送銀行中心
+5. 銀行中心回 `AddTransactionOuterResponse`
+6. Service 呼叫 Mapper 轉成 `ForwardRemittanceFrontendResponse`
+7. Controller 回傳 JSON 給前端
 
 ---
 
-## 5) 驗證與測試
+## 4. 關鍵程式路徑
+
+- Controller
+  - `/home/runner/work/mainframe-adapter-pattern/mainframe-adapter-pattern/mainframe-adapter/src/main/java/io/github/holydarktank2/mainframe/controller/ForwardRemittanceController.java`
+- Service
+  - `/home/runner/work/mainframe-adapter-pattern/mainframe-adapter-pattern/mainframe-adapter/src/main/java/io/github/holydarktank2/mainframe/application/ForwardRemittanceFacadeService.java`
+- Request Assembler
+  - `/home/runner/work/mainframe-adapter-pattern/mainframe-adapter-pattern/mainframe-adapter/src/main/java/io/github/holydarktank2/mainframe/integration/ForwardRemittanceRequestAssembler.java`
+- Response Mapper
+  - `/home/runner/work/mainframe-adapter-pattern/mainframe-adapter-pattern/mainframe-adapter/src/main/java/io/github/holydarktank2/mainframe/integration/ForwardRemittanceResponseMapper.java`
+- Frontend DTO
+  - `/home/runner/work/mainframe-adapter-pattern/mainframe-adapter-pattern/mainframe-adapter/src/main/java/io/github/holydarktank2/mainframe/controller/dto/`
+
+---
+
+## 5. 測試
 
 ```bash
 cd /home/runner/work/mainframe-adapter-pattern/mainframe-adapter-pattern/mainframe-adapter
 mvn test
 ```
 
-現有測試：
-- `TransactionConvertersTest`：各功能 request 轉換與驗證
-- `SimpleBankTransactionServiceTest`：完整 request→外部呼叫→response 轉換流程
+新增測試：
+- `ForwardRemittanceRequestAssemblerTest`
+- `ForwardRemittanceFacadeServiceTest`
+- `ForwardRemittanceControllerTest`
 
 ---
 
-## 6) 專案路徑
+## 6. 你要擴充其他功能時
 
-- `/home/runner/work/mainframe-adapter-pattern/mainframe-adapter-pattern/mainframe-adapter/src/main/java/io/github/holydarktank2/mainframe`
-- `/home/runner/work/mainframe-adapter-pattern/mainframe-adapter-pattern/mainframe-adapter/src/test/java/io/github/holydarktank2/mainframe`
+如果要擴充即期匯款/網銀申請/外匯交易，請複製同樣模式：
+
+1. 新增 frontend request/response DTO
+2. 新增對應 request assembler（填對應 sampleRequest 子區塊）
+3. 新增 response mapper（讀對應 response 欄位）
+4. 新增 facade service 方法
+5. 新增 controller endpoint
 
