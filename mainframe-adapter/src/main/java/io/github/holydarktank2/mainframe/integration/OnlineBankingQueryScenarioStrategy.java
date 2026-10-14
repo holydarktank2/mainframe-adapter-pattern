@@ -1,0 +1,20 @@
+package io.github.holydarktank2.mainframe.integration;
+
+import io.github.holydarktank2.mainframe.application.context.OnlineBankingEnrichedContext;
+import io.github.holydarktank2.mainframe.sampleRequest.AddTransactionFoqapi00OuterRequest;
+import io.github.holydarktank2.mainframe.sampleRequest.AddTransactionOuterRequest;
+import org.springframework.stereotype.Component;
+
+@Component
+public class OnlineBankingQueryScenarioStrategy implements OnlineBankingScenarioStrategy {
+    @Override
+    public void applyScenarioFields(AddTransactionOuterRequest outerRequest,
+                                    AddTransactionFoqapi00OuterRequest foqapi00,
+                                    OnlineBankingEnrichedContext context) {
+        outerRequest.setBegin8("BEGIN8");
+        outerRequest.setPgmName8("FOQAPI00");
+        outerRequest.setEnd8("END8");
+        foqapi00.setFoqapi00FuncCod("QUERY-" + context.frontendRequest().funcCod());
+        foqapi00.setFoqapi00BusinessCod("QRY-" + context.frontendRequest().businessCod());
+    }
+}
