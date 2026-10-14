@@ -1,156 +1,137 @@
 # mainframe-adapter-pattern
 
-本專案示範：同一支銀行中心 `AddTransactionOuterRequest`，如何支援多種完全不同功能，以及相似功能共享大量欄位。
+本專案示範如何在巨大 `AddTransactionOuterRequest` 下，使用
+- 共用欄位套用器（applier）
+- 情境策略（scenario strategy）
+- 外部資料補齊層（context resolver）
+
+來支援多個 `/api/ebanking` 情境，避免每個 API 都維護一支巨大 Assembler。
 
 ---
 
-## 1. 真實銀行模型來源（sampleRequest）
+## `/api/ebanking` 現有 API
 
-使用你提供的真實欄位模型：
+- `POST /api/ebanking/apply`
+- `POST /api/ebanking/query`
 
-- `/home/runner/work/mainframe-adapter-pattern/mainframe-adapter-pattern/mainframe-adapter/src/main/java/io/github/holydarktank2/mainframe/sampleRequest/AddTransactionOuterRequest.java`
-- `/home/runner/work/mainframe-adapter-pattern/mainframe-adapter-pattern/mainframe-adapter/src/main/java/io/github/holydarktank2/mainframe/sampleRequest/AddTransactionOuterResponse.java`
-
----
-
-## 2. 新增多個 Controller 示範的兩種情境
-
-## 2.1 完全不同功能（使用不同區塊）
-
-### A. 網銀申請 Controller
-- Controller: `OnlineBankingApplyController`
-- Endpoint: `POST /api/ebanking/apply`
-- Assembler: `OnlineBankingApplyRequestAssembler`
-- 主要區塊：`foqapi00`（`begin8/pgmName8/end8`）
-
-這條流程主要操作 `foqapi00` 欄位（例如 applicantId、docuNo、spotFxAmount），與匯款流程用到的區塊不同。
-
-## 2.2 相似功能（大量相同欄位）
-
-### B. 遠期匯款 Controller
-- Controller: `ForwardRemittanceController`
-- Endpoint: `POST /api/remittance/forward`
-- 主要區塊：`fsfrmtio`（`begin13/pgmName13/end13`）
-
-### C. 即期匯款 Controller
-- Controller: `SpotRemittanceController`
-- Endpoint: `POST /api/remittance/spot`
-- 主要區塊：同樣是 `fsfrmtio`
-
-兩條流程都大量使用相同 `fsfrmtio` 欄位，只在少數欄位（例如 `ecMk`）或流程用途不同。
+兩者欄位組合幾乎相同，但資料來源與情境規則不同。
 
 ---
 
-## 3. Service 到外部服務，如何解決欄位過多
+## 1) Service 到外部呼叫的責任分工
 
-本專案採「分層組裝 + 共用欄位套用器」：
+### Controller
+只接前端 DTO，呼叫 facade service。
 
-1. **Controller（前端入口）**
-   - 只收/回前端 DTO，不處理銀行欄位細節。
+### Facade Service
+流程固定：
+1. `OnlineBankingContextResolver` 做資料補齊
+2. `OnlineBankingRequestAssembler` 組 `AddTransactionOuterRequest`
+3. `BankCenterTransactionClient` 呼叫銀行
+4. `OnlineBankingResponseMapper` 轉前端回應
 
-2. **Facade Service（用例層）**
-   - 統一流程：
-     - `RequestAssembler` 組外部請求
-     - `BankCenterTransactionClient` 呼叫銀行
-     - `ResponseMapper` 轉回前端 DTO
+### Context Resolver（外部資料補齊層）
+整合三種來源：
+- `CustomerReferenceProvider`（可對應 DB）
+- `BankMessageProvider`（可對應銀行電文）
+- `OtherSystemProvider`（其他外部系統）
 
-3. **Request Assembler（場景層）**
-   - 每個業務場景保留自己的組裝規則。
-   - 只處理「該場景專屬」欄位。
+輸出 `OnlineBankingEnrichedContext`，供後續組裝使用。
 
-4. **Common Field Applier（共享欄位層）**
-   - `OuterRequestCommonFieldApplier`：統一套用外層共用欄位（txnCode、empNo、businessDate...）
-   - `FsfrmtioCommonFieldApplier`：統一套用 `fsfrmtio` 常見欄位
+### Request Assembler
+只做組裝，吃 `OnlineBankingEnrichedContext` + 情境策略。
 
-5. **BankCenterTransactionClient（外部整合邊界）**
-   - 將 HTTP/SOAP/Host 細節隔離在介面後方，讓業務邏輯不耦合 transport 細節。
+### Scenario Strategy
+- `OnlineBankingApplyScenarioStrategy`
+- `OnlineBankingQueryScenarioStrategy`
 
----
+兩者共用同一條組裝主流程，只在差異欄位做覆蓋。
 
-## 4. 「100 種情境要 100 個 Assembler 嗎？」
-
-不建議做成 100 個巨大且完全重複的 Assembler。
-
-本專案示範的做法是：
-
-- **保留場景 Assembler**（可讀性高，方便維護）
-- 但把大量重複 setter 抽成 **Common Field Applier**
-- 讓新場景只需：
-  1. 決定要啟用哪個區塊（例如 begin8 / begin13）
-  2. 寫少量場景差異欄位
-  3. 重用共用欄位套用器
-
-也就是：
-- 不是「100 個從零開始」
-- 而是「100 個薄場景 Assembler + 少數可重用欄位元件」
+### Client
+`BankCenterTransactionClient` 負責真正對外傳輸（HTTP/SOAP/Host）。
 
 ---
 
-## 5. 這個方法的優缺點
+## 2) 解決「欄位過多」的方法
+
+### A. 共用 applier
+- `OuterRequestCommonFieldApplier`：外層共用欄位
+- `Foqapi00CommonFieldApplier`：FOQAPI00 共同欄位
+
+### B. 情境策略
+- apply/query 共用組裝主流程
+- 差異由 strategy 注入，避免複製整支 assembler
+
+### C. 外部資料補齊層
+- service 不直接散落 DB/電文/外部系統呼叫
+- 統一在 resolver 取值與整併，降低耦合
+
+---
+
+## 3) 為什麼不是 100 支從零開始的 Assembler
+
+本專案採用：
+- 少量共用 applier
+- 薄情境 assembler
+- 多個情境 strategy
+
+因此擴充 100 種情境時，通常只要新增：
+1. 一個情境 strategy（必要時）
+2. 少量情境差異欄位邏輯
+3. 測試
+
+而不是複製 100 次大量 setter。
+
+---
+
+## 4) 優缺點
 
 ### 優點
-1. **可讀性高**：每個 Controller/Service 對應一個業務場景，初階工程師容易追。
-2. **修改風險可控**：某場景調整欄位時，影響範圍小。
-3. **共用避免重複**：透過 Common Field Applier 降低重複 setter。
-4. **測試清楚**：Assembler/Service/Controller 可分層單測。
-5. **外部依賴隔離**：`BankCenterTransactionClient` 便於替換與 mock。
+- 欄位重複明顯下降
+- apply/query 可共用主流程
+- 外部資料來源邏輯集中、可測試
+- 便於擴充新情境
 
 ### 缺點
-1. **類別數量變多**：場景越多，檔案數量越多。
-2. **初期設計成本較高**：要先定義 DTO、Assembler、Mapper、Service。
-3. **欄位規格變更時需同步更新多處**：DTO、Assembler、測試需一起改。
-4. **非零執行成本**：多一層映射/組裝（通常可接受）。
+- 類別數增加
+- 初期設計成本較高
+- 需處理外部來源失敗策略（retry/fallback/降級）
 
 ---
 
-## 6. 端到端流程（前端 -> 後端 -> 銀行 -> 前端）
+## 5) 主要類別
 
-以 `POST /api/remittance/forward` 為例：
-
-1. 前端送 `ForwardRemittanceFrontendRequest`
-2. `ForwardRemittanceController` 呼叫 `ForwardRemittanceFacadeService`
-3. Service 呼叫 `ForwardRemittanceRequestAssembler`
-4. Assembler 內部使用：
-   - `OuterRequestCommonFieldApplier`
-   - `FsfrmtioCommonFieldApplier`
-   組成 `AddTransactionOuterRequest`
-5. Service 呼叫 `BankCenterTransactionClient.addTransaction(...)`
-6. 收到 `AddTransactionOuterResponse`
-7. `ForwardRemittanceResponseMapper` 轉成 `ForwardRemittanceFrontendResponse`
-8. Controller 回傳前端
-
----
-
-## 7. 主要類別清單
-
-### Controllers
-- `ForwardRemittanceController`
-- `SpotRemittanceController`
+### API
 - `OnlineBankingApplyController`
+- `OnlineBankingQueryController`
 
-### Services
-- `ForwardRemittanceFacadeService`
-- `SpotRemittanceFacadeService`
+### Facade
 - `OnlineBankingApplyFacadeService`
+- `OnlineBankingQueryFacadeService`
 
-### Assemblers / Mappers
-- `ForwardRemittanceRequestAssembler`
-- `SpotRemittanceRequestAssembler`
-- `OnlineBankingApplyRequestAssembler`
-- `ForwardRemittanceResponseMapper`
-- `SpotRemittanceResponseMapper`
-- `OnlineBankingApplyResponseMapper`
+### Context
+- `OnlineBankingContextResolver`
+- `OnlineBankingEnrichedContext`
+- `CustomerReferenceProvider` / `BankMessageProvider` / `OtherSystemProvider`
 
-### Shared appliers
-- `OuterRequestCommonFieldApplier`
-- `FsfrmtioCommonFieldApplier`
+### Assembly
+- `OnlineBankingRequestAssembler`
+- `Foqapi00CommonFieldApplier`
+- `OnlineBankingApplyScenarioStrategy`
+- `OnlineBankingQueryScenarioStrategy`
 
 ---
 
-## 8. 測試
+## 6) 測試
 
 ```bash
 cd /home/runner/work/mainframe-adapter-pattern/mainframe-adapter-pattern/mainframe-adapter
 mvn test
 ```
+
+包含：
+- Context resolver 多來源整併與失敗測試
+- apply/query 策略差異測試
+- facade 流程與錯誤行為測試
+- controller 回應測試
 

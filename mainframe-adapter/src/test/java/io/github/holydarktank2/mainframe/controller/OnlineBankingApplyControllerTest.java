@@ -14,7 +14,7 @@ class OnlineBankingApplyControllerTest {
 
     @Test
     void submitShouldReturnFacadeResult() {
-        OnlineBankingApplyFacadeService facadeService = new OnlineBankingApplyFacadeService(null, null, null) {
+        OnlineBankingApplyFacadeService facadeService = new OnlineBankingApplyFacadeService(null, null, null, null, null) {
             @Override
             public OnlineBankingApplyFrontendResponse process(OnlineBankingApplyFrontendRequest frontendRequest) {
                 return new OnlineBankingApplyFrontendResponse(false, "1001", "INVALID", "TXN-EBK", "B001", "L0009", "SER-EBK");

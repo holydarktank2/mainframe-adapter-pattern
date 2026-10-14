@@ -36,5 +36,5 @@ public record OnlineBankingApplyFrontendRequest(
         String attributeCode,
         BigDecimal toUsFxRate,
         String useOfFunds
-) {
+) implements OnlineBankingFrontendRequest {
 }
